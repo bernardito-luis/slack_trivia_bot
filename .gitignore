@@ -1,0 +1,7 @@
+.idea
+__pycache__
+questions
+slack_venv
+local_settings.py
+trivia.sqlite3
+trivia.zip
