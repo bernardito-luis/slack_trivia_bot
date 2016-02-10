@@ -1,5 +1,5 @@
 import asyncio
-import json
+import time
 import random
 import time
 
@@ -23,6 +23,7 @@ except ImportError:
 # rtm_url = json.loads(rtm_connection.decode('utf-8'))['url']
 # print(rtm_url)
 #
+# sc = SlackClient(BOT_TOKEN)
 # if sc.rtm_connect():
 #     print('start rtm')
 #     while True:
@@ -209,19 +210,42 @@ def listen_to_the_channel(channel, event_loop):
     else:
         print("Connection Failed, invalid token?")
 
+@asyncio.coroutine
+def ask_question_coroutine(seconds_to_sleep=1):
+    print('Asking for a question')
+    rand_q = get_random_question()
+    ask_question(rand_q)
+    yield from asyncio.sleep(seconds_to_sleep)
+
+
+@asyncio.coroutine
+def read_answers_coroutine(seconds_to_sleep=1):
+    sc = SlackClient(BOT_TOKEN)
+    if sc.rtm_connect():
+        while True:
+            new_event = sc.rtm_read()
+            filtered_events = [
+                x for x in new_event if (
+                    x.get('channel') == CHANNEL and x.get('type') == 'message'
+                )
+            ]
+            if filtered_events:
+                print([x['text'] for x in filtered_events])
+            # time.sleep(1)
+    else:
+        print("Connection Failed, invalid token?")
+    yield from asyncio.sleep(seconds_to_sleep)
+
 
 if __name__ == '__main__':
     round_number = initialize_round_number()
-    rand_q = get_random_question()
+    # rand_q = get_random_question()
     # ask_question(rand_q)
-
     loop = asyncio.get_event_loop()
     tasks = [
-        listen_to_the_channel(CHANNEL, loop),
+        ask_question_coroutine(1),
+        read_answers_coroutine(),
     ]
-    loop.run_until_complete(
-        asyncio.wait(tasks)
-    )
-    loop.close()
+    loop.run_until_complete(asyncio.wait(tasks))
 
     print('Success!!')
