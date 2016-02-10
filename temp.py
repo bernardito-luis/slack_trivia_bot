@@ -1,6 +1,10 @@
-import time
+import asyncio
+import json
 import random
+import time
+
 from slackclient import SlackClient
+
 try:
     from local_settings import *
 except ImportError:
@@ -103,10 +107,10 @@ def increment_round_number():
     print('incrementing...')
     round_number += 1
 
+
 def get_random_question():
     Session = sessionmaker(bind=engine)
     session = Session()
-    print(round_number)
     random_question = session.query(Question).filter(
         Question.times_asked == round_number
     ).order_by(func.random()).first()
@@ -128,7 +132,9 @@ def initialize_round_number():
     ).first().times_asked
 
 
+@asyncio.coroutine
 def ask_question(question):
+    print('start asking')
     answer = question.answer
     hints = list()
     hint = ["`Подсказка: "] + ['.']*len(answer) + ['`']
@@ -141,8 +147,6 @@ def ask_question(question):
         hint[offset+i] = answer[i]
         hints.append("".join(hint))
     sc = SlackClient(BOT_TOKEN)
-    #dbg
-    print(sc.api_call("api.test"))
 
     sc.api_call(
         "chat.postMessage",
@@ -150,7 +154,8 @@ def ask_question(question):
         channel=CHANNEL,
         text=question.text
     )
-    time.sleep(5)
+    # time.sleep(5)
+    yield from asyncio.sleep(5)
     for hint in hints:
         print(hint)
         sc.api_call(
@@ -159,11 +164,64 @@ def ask_question(question):
             channel=CHANNEL,
             text=hint
         )
-        time.sleep(3.5)
+        yield from asyncio.sleep(3.5)
+        # time.sleep(3.5)
+
+
+@asyncio.coroutine
+def listen_to_the_channel(channel, event_loop):
+    sc = SlackClient(BOT_TOKEN)
+    rtm_connection = sc.api_call("rtm.start")
+
+    if sc.rtm_connect():
+        print('start rtm')
+        asking_question = False
+        current_answer = None
+        ask_task = None
+        while True:
+            try:
+                new_event = sc.rtm_read()
+                filtered_events = [
+                    x for x in new_event
+                    if (x.get('channel') == channel and
+                        x.get('type') == 'message')
+                ]
+                if current_answer and filtered_events:
+                    evs = [(x['text'], x['user']) for x in filtered_events]
+                    for text, user in evs:
+                        if current_answer == text:
+                            print('User %s is krosavcheg' % (user, ))
+                            ask_task.cancel()
+                            asking_question = False
+
+                if not asking_question:
+                    asking_question = True
+                    rand_q = get_random_question()
+                    current_answer = rand_q.answer
+                    ask_task = asyncio.Task(
+                        ask_question(rand_q), loop=event_loop
+                    )
+                yield from asyncio.sleep(0)
+            except KeyboardInterrupt:
+                if ask_task:
+                    ask_task.cancel()
+                break
+    else:
+        print("Connection Failed, invalid token?")
 
 
 if __name__ == '__main__':
     round_number = initialize_round_number()
     rand_q = get_random_question()
-    ask_question(rand_q)
+    # ask_question(rand_q)
+
+    loop = asyncio.get_event_loop()
+    tasks = [
+        listen_to_the_channel(CHANNEL, loop),
+    ]
+    loop.run_until_complete(
+        asyncio.wait(tasks)
+    )
+    loop.close()
+
     print('Success!!')
