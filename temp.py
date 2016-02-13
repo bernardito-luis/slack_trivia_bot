@@ -194,7 +194,8 @@ def listen_to_the_channel(channel, event_loop):
                             ask_task.cancel()
                             asking_question = False
 
-                if not asking_question:
+                if (not asking_question or
+                        ask_task.done() or ask_task.cancelled()):
                     asking_question = True
                     rand_q = get_random_question()
                     current_answer = rand_q.answer
