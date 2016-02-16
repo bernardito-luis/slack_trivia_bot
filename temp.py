@@ -1,7 +1,6 @@
 import asyncio
 import json
 import random
-import time
 
 from slackclient import SlackClient
 
@@ -9,31 +8,6 @@ try:
     from local_settings import *
 except ImportError:
     pass
-
-
-# sc = SlackClient(BOT_TOKEN)
-# chan = CHANNEL
-# greeting = "Hello!\nNice to meet you there =)"
-# print(sc.api_call("chat.postMessage", as_user="true:", channel=chan, text=greeting))
-
-
-# sc = SlackClient(BOT_TOKEN)
-# print(sc.api_call("api.test"))
-# rtm_connection = sc.api_call("rtm.start")
-# rtm_url = json.loads(rtm_connection.decode('utf-8'))['url']
-# print(rtm_url)
-#
-# if sc.rtm_connect():
-#     print('start rtm')
-#     while True:
-#         new_event = sc.rtm_read()
-#         filtered_events = [x for x in new_event if x.get('channel') == 'CHANNEL' and x.get('type') == 'message']
-#         if filtered_events:
-#             print([x['text'] for x in filtered_events])
-#         # time.sleep(1)
-# else:
-#     print("Connection Failed, invalid token?")
-
 
 
 import os
@@ -68,7 +42,7 @@ class Question(Base):
     text = Column(String)
     answer = Column(String)
     times_asked = Column(Integer, default=0)
-    blamed = Column(Integer, default=0)
+    blamed = Column(String, default=0)
 
     __table_args__ = (
         UniqueConstraint('text', 'answer', name='_text_answer_uc'),
@@ -100,6 +74,7 @@ def fill_db_with_questions_from_txt():
             if c % 1000 == 0:
                 print('Added %d k question' % (c / 1000))
     session.commit()
+    session.close()
 
 
 def increment_round_number():
@@ -120,26 +95,36 @@ def get_random_question():
         random_question = session.query(Question).filter(
             Question.times_asked == round_number
         ).order_by(func.random()).first()
+
+    question_dict = {
+        'id': random_question.id,
+        'text': random_question.text,
+        'answer': random_question.answer,
+    }
+    random_question.times_asked += 1
+    session.commit()
+
+    # session.expunge(random_question)
     session.close()
-    return random_question
+    return question_dict
 
 
 def initialize_round_number():
     Session = sessionmaker(bind=engine)
     session = Session()
-    return session.query(Question).order_by(
+    round_number = session.query(Question).order_by(
         Question.times_asked
     ).first().times_asked
+    session.close()
+    return round_number
 
 
 @asyncio.coroutine
 def ask_question(question):
-    print('start asking')
-    answer = question.answer
+    answer = question['answer']
     hints = list()
     hint = ["`Подсказка: "] + ['.']*len(answer) + ['`']
     hints.append("".join(hint))
-    print(hint)
     offset = 1
     rand_indexes = list(range(len(answer)))
     random.shuffle(rand_indexes)
@@ -152,20 +137,88 @@ def ask_question(question):
         "chat.postMessage",
         as_user="true:",
         channel=CHANNEL,
-        text=question.text
+        text="#" + str(question['id']) + ": " + question['text']
     )
-    # time.sleep(5)
     yield from asyncio.sleep(5)
-    for hint in hints:
-        print(hint)
+    for i, hint in enumerate(hints):
         sc.api_call(
             "chat.postMessage",
             as_user="true:",
             channel=CHANNEL,
             text=hint
         )
-        yield from asyncio.sleep(3.5)
-        # time.sleep(3.5)
+        if i < len(hints) - 1:
+            yield from asyncio.sleep(3.5)
+
+
+def get_nickname(sc, user):
+    user_info = sc.api_call(
+        "users.info",
+        user=user,
+    )
+    user_name = json.loads(
+        user_info.decode('utf-8')
+    )['user']['name']
+    return user_name
+
+def pm_user(user, message):
+    sc = SlackClient(BOT_TOKEN)
+
+    sc.api_call(
+        "chat.postMessage",
+        as_user="true:",
+        channel=user,
+        text=message
+    )
+
+
+def process_command(sc, command, from_user):
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    if command == 'top':
+        tops = session.query(Player).order_by(Player.score.desc()).limit(5)
+        for place, top in enumerate(tops):
+            user_name = get_nickname(sc, top.slack_id)
+            message = (
+                "#" + str(place+1) + ' ' + user_name + ' ' + str(top.score))
+            pm_user(from_user, message)
+    elif command == 'myscore':
+        player = session.query(Player).filter(
+            Player.slack_id == from_user).first()
+        if player:
+            message = "Количество очков: " + str(player.score)
+            pm_user(from_user, message)
+    elif command.startswith('blame'):
+        # don't blame too much they could think that you are weak
+        times_blamed = session.query(func.count(Question.id)).filter(
+            Question.blamed == from_user).scalar()
+        if times_blamed == 5:
+            message = 'Хватит жаловаться!'
+            pm_user(from_user, message)
+            return
+        question_id = command[5:]
+        try:
+            question_id = int(question_id)
+        except ValueError:
+            session.close()
+            return
+        question = session.query(Question).get(question_id)
+        if question and not question.blamed:
+            question.blamed = from_user
+            session.commit()
+            message = 'Жалоба на вопрос %d принята' % (question_id, )
+            pm_user(from_user, message)
+        # elif question.blamed in ADMIN_USERS:
+        #     message = 'Жалоба на вопрос %d закрыта' % (question_id, )
+        #     pm_user(from_user, message)
+        elif question:
+            message = 'Жалоба на вопрос %d уже открыта' % (question_id, )
+            pm_user(from_user, message)
+        else:
+            message = 'Набранный номер не существует'
+            pm_user(from_user, message)
+
+    session.close()
 
 
 @asyncio.coroutine
@@ -178,6 +231,7 @@ def listen_to_the_channel(channel, event_loop):
         asking_question = False
         current_answer = None
         ask_task = None
+        trivia_on = False
         while True:
             try:
                 new_event = sc.rtm_read()
@@ -186,19 +240,64 @@ def listen_to_the_channel(channel, event_loop):
                     if (x.get('channel') == channel and
                         x.get('type') == 'message')
                 ]
-                if current_answer and filtered_events:
-                    evs = [(x['text'], x['user']) for x in filtered_events]
+                if filtered_events:
+                    try:
+                        evs = [(x['text'], x['user']) for x in filtered_events]
+                    except KeyError:
+                        evs = ()
+
                     for text, user in evs:
-                        if current_answer == text:
+                        if text.startswith('.trivia '):
+                            if user in ADMIN_USERS and text == ".trivia start":
+                                trivia_on = True
+                            elif user in ADMIN_USERS and text == ".trivia stop":
+                                trivia_on = False
+                            process_command(sc, text[8:], user)
+                        if current_answer and current_answer == text.lower():
                             print('User %s is krosavcheg' % (user, ))
                             ask_task.cancel()
                             asking_question = False
+                            # TODO: create coroutine out of this
+                            # Tell about the winner
+                            Session = sessionmaker(bind=engine)
+                            session = Session()
+                            winner = session.query(Player).filter(
+                                Player.slack_id == user).first()
+                            if not winner:
+                                new_player = Player(
+                                    slack_id=user,
+                                    score=1
+                                )
+                                session.add(new_player)
+                            else:
+                                winner.score += 1
+                            session.commit()
+                            session.close()
+                            # user_info = sc.api_call(
+                            #     "users.info",
+                            #     user=user,
+                            # )
+                            # user_name = json.loads(
+                            #     user_info.decode('utf-8')
+                            # )['user']['name']
+                            user_name = get_nickname(sc, user)
+                            sc.api_call(
+                                "chat.postMessage",
+                                as_user="true:",
+                                channel=CHANNEL,
+                                text=user_name + " - молодчина! Плюс балл."
+                            )
 
-                if (not asking_question or
-                        ask_task.done() or ask_task.cancelled()):
+                            # pause
+
+                if trivia_on and (
+                    not asking_question or ask_task.done() or
+                    ask_task.cancelled()
+                ):
                     asking_question = True
                     rand_q = get_random_question()
-                    current_answer = rand_q.answer
+                    current_answer = rand_q['answer'].lower()
+                    yield from asyncio.sleep(5)
                     ask_task = asyncio.Task(
                         ask_question(rand_q), loop=event_loop
                     )
@@ -213,8 +312,6 @@ def listen_to_the_channel(channel, event_loop):
 
 if __name__ == '__main__':
     round_number = initialize_round_number()
-    rand_q = get_random_question()
-    # ask_question(rand_q)
 
     loop = asyncio.get_event_loop()
     tasks = [
@@ -224,5 +321,4 @@ if __name__ == '__main__':
         asyncio.wait(tasks)
     )
     loop.close()
-
-    print('Success!!')
+    print("Success!!")
