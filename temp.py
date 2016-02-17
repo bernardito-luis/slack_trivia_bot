@@ -1,4 +1,4 @@
-import os
+import sys
 import asyncio
 import json
 import random
@@ -6,78 +6,27 @@ import random
 from slackclient import SlackClient
 
 from sqlalchemy import create_engine
-from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.sql.expression import func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import sessionmaker, relationship
+
+from models import Player, Question
 
 try:
     from local_settings import *
 except ImportError:
-    pass
+    sys.exit(
+        "You should create local_settings.py with BOT_TOKEN, CHANNEL and "
+        "ADMIN_USERS"
+    )
 
 round_number = -1
 
 engine = create_engine('sqlite:///trivia.sqlite3')
 
-Base = declarative_base()
-
-class Player(Base):
-    __tablename__ = 'player'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    slack_id = Column(String, unique=True)
-    score = Column(Integer)
-
-    def __repr__(self):
-        return '<Player(slack_id=%s, score=%s)>' % (self.slack_id, self.score)
-
-class Question(Base):
-    __tablename__ = 'question'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    text = Column(String)
-    answer = Column(String)
-    times_asked = Column(Integer, default=0)
-    blamed = Column(String, default=0)
-
-    __table_args__ = (
-        UniqueConstraint('text', 'answer', name='_text_answer_uc'),
-    )
-
-
-def fill_db_with_questions_from_txt():
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    c = 0
-    skipper = 35000
-    with open(os.path.join('questions', 'Total.txt')) as f:
-        for line in f.readlines():
-            c += 1
-            if c < skipper:
-                continue
-            question_text = line[:line.find('*')]
-            question_answer = line[line.find('*')+1:-1]
-            new_q = Question(
-                text=question_text,
-                answer=question_answer,
-            )
-            session.add(new_q)
-            try:
-                session.commit()
-            except IntegrityError:
-                print('IntegrityError with: %s' % (question_text, ))
-                session.rollback()
-            if c % 1000 == 0:
-                print('Added %d k question' % (c / 1000))
-    session.commit()
-    session.close()
-
 
 def increment_round_number():
     global round_number
-    print('incrementing...')
     round_number += 1
 
 
@@ -276,7 +225,8 @@ def listen_to_the_channel(channel, event_loop):
                         if text.startswith('.trivia '):
                             if user in ADMIN_USERS and text == ".trivia start":
                                 trivia_on = True
-                            elif user in ADMIN_USERS and text == ".trivia stop":
+                            elif (user in ADMIN_USERS and
+                                    text == ".trivia stop"):
                                 trivia_on = False
                                 if ask_task:
                                     ask_task.cancel()
