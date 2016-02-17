@@ -1,24 +1,22 @@
+import os
 import asyncio
 import json
 import random
 
 from slackclient import SlackClient
 
-try:
-    from local_settings import *
-except ImportError:
-    pass
-
-
-import os
 from sqlalchemy import create_engine
-from sqlalchemy import desc
 from sqlalchemy.schema import UniqueConstraint
 from sqlalchemy.sql.expression import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import sessionmaker, relationship
+
+try:
+    from local_settings import *
+except ImportError:
+    pass
 
 round_number = -1
 
@@ -104,7 +102,6 @@ def get_random_question():
     random_question.times_asked += 1
     session.commit()
 
-    # session.expunge(random_question)
     session.close()
     return question_dict
 
@@ -151,6 +148,33 @@ def ask_question(question):
             yield from asyncio.sleep(3.5)
 
 
+def question_answered(user, ask_task, sc):
+    print('User %s is krosavcheg' % (user, ))
+    ask_task.cancel()
+    # Tell about the winner
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    winner = session.query(Player).filter(
+        Player.slack_id == user).first()
+    if not winner:
+        new_player = Player(
+            slack_id=user,
+            score=1
+        )
+        session.add(new_player)
+    else:
+        winner.score += 1
+    session.commit()
+    session.close()
+    user_name = get_nickname(sc, user)
+    sc.api_call(
+        "chat.postMessage",
+        as_user="true:",
+        channel=CHANNEL,
+        text=user_name + " - молодчина! Плюс балл."
+    )
+
+
 def get_nickname(sc, user):
     user_info = sc.api_call(
         "users.info",
@@ -188,8 +212,10 @@ def process_command(sc, command, from_user):
         if player:
             message = "Количество очков: " + str(player.score)
             pm_user(from_user, message)
+        else:
+            print('User %s has no score' % (from_user, ))
     elif command.startswith('blame'):
-        # don't blame too much they could think that you are weak
+        # don't blame too much they could think that you don't want to learn
         times_blamed = session.query(func.count(Question.id)).filter(
             Question.blamed == from_user).scalar()
         if times_blamed == 5:
@@ -208,9 +234,9 @@ def process_command(sc, command, from_user):
             session.commit()
             message = 'Жалоба на вопрос %d принята' % (question_id, )
             pm_user(from_user, message)
-        # elif question.blamed in ADMIN_USERS:
-        #     message = 'Жалоба на вопрос %d закрыта' % (question_id, )
-        #     pm_user(from_user, message)
+        elif question.blamed in ADMIN_USERS:
+            message = 'Жалоба на вопрос %d закрыта' % (question_id, )
+            pm_user(from_user, message)
         elif question:
             message = 'Жалоба на вопрос %d уже открыта' % (question_id, )
             pm_user(from_user, message)
@@ -224,14 +250,14 @@ def process_command(sc, command, from_user):
 @asyncio.coroutine
 def listen_to_the_channel(channel, event_loop):
     sc = SlackClient(BOT_TOKEN)
-    rtm_connection = sc.api_call("rtm.start")
+    sc.api_call("rtm.start")
 
     if sc.rtm_connect():
         print('start rtm')
         asking_question = False
         current_answer = None
         ask_task = None
-        trivia_on = False
+        trivia_on = True
         while True:
             try:
                 new_event = sc.rtm_read()
@@ -252,43 +278,12 @@ def listen_to_the_channel(channel, event_loop):
                                 trivia_on = True
                             elif user in ADMIN_USERS and text == ".trivia stop":
                                 trivia_on = False
+                                if ask_task:
+                                    ask_task.cancel()
                             process_command(sc, text[8:], user)
                         if current_answer and current_answer == text.lower():
-                            print('User %s is krosavcheg' % (user, ))
-                            ask_task.cancel()
                             asking_question = False
-                            # TODO: create coroutine out of this
-                            # Tell about the winner
-                            Session = sessionmaker(bind=engine)
-                            session = Session()
-                            winner = session.query(Player).filter(
-                                Player.slack_id == user).first()
-                            if not winner:
-                                new_player = Player(
-                                    slack_id=user,
-                                    score=1
-                                )
-                                session.add(new_player)
-                            else:
-                                winner.score += 1
-                            session.commit()
-                            session.close()
-                            # user_info = sc.api_call(
-                            #     "users.info",
-                            #     user=user,
-                            # )
-                            # user_name = json.loads(
-                            #     user_info.decode('utf-8')
-                            # )['user']['name']
-                            user_name = get_nickname(sc, user)
-                            sc.api_call(
-                                "chat.postMessage",
-                                as_user="true:",
-                                channel=CHANNEL,
-                                text=user_name + " - молодчина! Плюс балл."
-                            )
-
-                            # pause
+                            question_answered(user, ask_task, sc)
 
                 if trivia_on and (
                     not asking_question or ask_task.done() or
