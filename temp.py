@@ -8,7 +8,7 @@ from slackclient import SlackClient
 from sqlalchemy import create_engine
 from sqlalchemy.sql.expression import func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, scoped_session
 
 from models import Player, Question
 
@@ -255,15 +255,44 @@ def listen_to_the_channel(channel, event_loop):
         print("Connection Failed, invalid token?")
 
 
-if __name__ == '__main__':
-    round_number = initialize_round_number()
+from contextlib import contextmanager
 
-    loop = asyncio.get_event_loop()
-    tasks = [
-        listen_to_the_channel(CHANNEL, loop),
-    ]
-    loop.run_until_complete(
-        asyncio.wait(tasks)
-    )
-    loop.close()
+class TriviaBot(object):
+    def __init__(self):
+        # session_cls = sessionmaker(bind=engine)
+        # self.session = session_cls()
+        self.round_number = self._initialize_round_number()
+        self.sc = SlackClient(BOT_TOKEN)
+
+        print(self.round_number)
+
+    @contextmanager
+    def _db_session(self, db_url='sqlite:///trivia.sqlite3'):
+        engine = create_engine(db_url)
+        connection = engine.connect()
+        db_session = scoped_session(sessionmaker(bind=engine))
+        yield db_session
+        db_session.close()
+        connection.close()
+
+    def _initialize_round_number(self):
+        with self._db_session() as session:
+            round_number = session.query(Question).order_by(
+                Question.times_asked
+            ).first().times_asked
+            return round_number
+
+
+if __name__ == '__main__':
+    # round_number = initialize_round_number()
+    #
+    # loop = asyncio.get_event_loop()
+    # tasks = [
+    #     listen_to_the_channel(CHANNEL, loop),
+    # ]
+    # loop.run_until_complete(
+    #     asyncio.wait(tasks)
+    # )
+    # loop.close()
+    bot = TriviaBot()
     print("Success!!")
