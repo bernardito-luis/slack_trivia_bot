@@ -66,6 +66,25 @@ def initialize_round_number():
     return round_number
 
 
+def post_to_channel(sc, message):
+    sc.api_call(
+        "chat.postMessage",
+        as_user="true:",
+        channel=CHANNEL,
+        text=message
+    )
+
+#dbg
+def spam():
+    import time
+    sc = SlackClient(BOT_TOKEN)
+    for num in range(10200):
+        if num % 200 == 0:
+            print('200 ready => sleep')
+            time.sleep(300)
+        post_to_channel(sc, str(num))
+
+
 @asyncio.coroutine
 def ask_question(question):
     answer = question['answer']
@@ -256,14 +275,15 @@ def listen_to_the_channel(channel, event_loop):
 
 
 if __name__ == '__main__':
-    round_number = initialize_round_number()
-
-    loop = asyncio.get_event_loop()
-    tasks = [
-        listen_to_the_channel(CHANNEL, loop),
-    ]
-    loop.run_until_complete(
-        asyncio.wait(tasks)
-    )
-    loop.close()
+    # round_number = initialize_round_number()
+    #
+    # loop = asyncio.get_event_loop()
+    # tasks = [
+    #     listen_to_the_channel(CHANNEL, loop),
+    # ]
+    # loop.run_until_complete(
+    #     asyncio.wait(tasks)
+    # )
+    # loop.close()
+    spam()
     print("Success!!")
